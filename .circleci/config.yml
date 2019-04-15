@@ -21,7 +21,7 @@ jobs:
       - run:
           name: Install PackageCloud
           command: |
-              gem install package_cloud
+              sudo gem install package_cloud
       - run:
           name: Build amd64
           command: |
