@@ -22,7 +22,7 @@ jobs:
       - run:
           name: Build i386
           command: |
-              sudo ln -s `which strip` /usr/local/bin/i686-linux-gnu-strip
+              sudo ln -s `which strip` /usr/bin/i686-linux-gnu-strip
               debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=386 -ai386 -i -us -uc -b
       - run:
           name: Build arm
