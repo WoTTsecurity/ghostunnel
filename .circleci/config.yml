@@ -16,7 +16,12 @@ jobs:
                sudo apt-get install libltdl-dev devscripts \
                 crossbuild-essential-armel libltdl-dev:armel \
                 crossbuild-essential-armhf libltdl-dev:armhf \
-                binutils-multiarch libltdl-dev:i386
+                binutils-multiarch libltdl-dev:i386 \
+                ruby2.3-dev rubygems
+      - run:
+          name: Install PackageCloud
+          command: |
+              gem install package_cloud
       - run:
           name: Build amd64
           command: |
