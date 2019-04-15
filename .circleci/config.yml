@@ -41,5 +41,9 @@ jobs:
           command: |
               mkdir -p /tmp/deb
               mv ../*.deb /tmp/deb
+      - run:
+          name: Upload to PackageCloud
+          command: |
+              package_cloud push a-martynovich/wott/debian/stretch /tmp/deb/*.deb
       - store_artifacts:
           path: /tmp/deb
