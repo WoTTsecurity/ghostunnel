@@ -10,13 +10,24 @@ jobs:
           name: Install depenedencies
           command: |
                sudo dpkg --add-architecture armel
+               sudo dpkg --add-architecture i386
                sudo apt-get update
-               sudo apt-get install libltdl-dev devscripts crossbuild-essential-armel libltdl-dev:armel
+               sudo apt-get install libltdl-dev devscripts \
+                crossbuild-essential-armel libltdl-dev:armel \
+                binutils-multiarch libltdl-dev:i386
       - run:
-          name: Build x86
+          name: Build amd64
           command: |
               debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=amd64 -aamd64 -i -us -uc -b
-              debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=arm -aarmel -i -us -uc -b
+      - run:
+          name: Build i386
+          command: |
+              sudo ln -s `which strip` /usr/local/bin/i686-linux-gnu-strip
+              debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=386 -ai386 -i -us -uc -b
+      - run:
+          name: Build arm
+          command: |
+              debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=arm --set-envvar GOARM=6 -aarmel -i -us -uc -b
       - run:
           name: Store artifacts
           command: |
