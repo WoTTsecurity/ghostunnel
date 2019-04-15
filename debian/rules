@@ -8,11 +8,5 @@ export DH_OPTIONS
 	# go build
 	dh $@
 
-#override_dh_auto_install:
-#	install -D -m 0755 ghostunnel $$(pwd)/debian/ghostunnel/usr/local/bin/ghostunnel
-
 override_dh_auto_test:
 	# Don't run the tests!
-
-override_dh_auto_clean:
-	# nothing
