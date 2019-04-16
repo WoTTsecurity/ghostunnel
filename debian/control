@@ -1,0 +1,17 @@
+Source: ghostunnel
+Maintainer: Artem Martynovich <artem.martynovich@gmail.com>
+Homepage: https://www.wott.io/
+Section: go
+Priority: extra
+Build-Depends:
+ debhelper (>= 8),
+ libltdl-dev
+Standards-Version: 3.9.8
+Vcs-Git: https://github.com/WoTTsecurity/ghostunnel.git
+Vcs-Browser: https://github.com/WoTTsecurity/ghostunnel
+
+Package: ghostunnel
+Architecture: amd64 i386 armel armhf
+Section: go
+Depends: libltdl7
+Description: A simple SSL/TLS proxy with mutual authentication for securing non-TLS services.
