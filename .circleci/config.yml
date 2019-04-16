@@ -45,5 +45,6 @@ jobs:
           name: Upload to PackageCloud
           command: |
               package_cloud push a-martynovich/wott/debian/stretch /tmp/deb/*.deb
+              package_cloud push a-martynovich/wott/raspbian/stretch /tmp/deb/ghostunnel*_armhf.deb
       - store_artifacts:
           path: /tmp/deb
