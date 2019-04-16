@@ -37,14 +37,15 @@ jobs:
               debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=arm --set-envvar GOARM=6 -aarmel -i -us -uc -b
               debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=arm --set-envvar GOARM=6 -aarmhf -i -us -uc -b
       - run:
-          name: Store artifacts
+          name: Copy artifacts
           command: |
               mkdir -p /tmp/deb
               mv ../*.deb /tmp/deb
-      - run:
-          name: Upload to PackageCloud
+      - deploy:
           command: |
-              package_cloud push wott/agent/debian/stretch /tmp/deb/*.deb
-              package_cloud push wott/agent/raspbian/stretch /tmp/deb/ghostunnel*_armhf.deb
+              if [ "${CIRCLE_BRANCH}" == "master" ]; then
+                package_cloud push wott/agent/debian/stretch /tmp/deb/*.deb
+                package_cloud push wott/agent/raspbian/stretch /tmp/deb/ghostunnel*_armhf.deb
+              fi
       - store_artifacts:
           path: /tmp/deb
