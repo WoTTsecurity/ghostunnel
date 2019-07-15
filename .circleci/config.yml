@@ -45,7 +45,9 @@ jobs:
           command: |
               if [ "${CIRCLE_BRANCH}" == "master" ]; then
                 package_cloud push wott/agent/debian/stretch /tmp/deb/*.deb
+                package_cloud push wott/agent/debian/buster /tmp/deb/*.deb
                 package_cloud push wott/agent/raspbian/stretch /tmp/deb/ghostunnel*_armhf.deb
+                package_cloud push wott/agent/raspbian/buster /tmp/deb/ghostunnel*_armhf.deb
               fi
       - store_artifacts:
           path: /tmp/deb
