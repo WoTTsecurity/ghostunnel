@@ -32,13 +32,13 @@ import (
 
 	graphite "github.com/cyberdelia/go-metrics-graphite"
 	gsyslog "github.com/hashicorp/go-syslog"
-	reuseport "github.com/kavu/go_reuseport"
 	http_dialer "github.com/mwitkow/go-http-dialer"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	metrics "github.com/rcrowley/go-metrics"
 	"github.com/square/ghostunnel/auth"
 	"github.com/square/ghostunnel/certloader"
 	"github.com/square/ghostunnel/proxy"
+	"github.com/square/ghostunnel/socket"
 	"github.com/square/ghostunnel/wildcard"
 	sqmetrics "github.com/square/go-sq-metrics"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
@@ -65,8 +65,8 @@ var (
 	app = kingpin.New("ghostunnel", "A simple SSL/TLS proxy with mutual authentication for securing non-TLS services.")
 
 	serverCommand        = app.Command("server", "Server mode (TLS listener -> plain TCP/UNIX target).")
-	serverListenAddress  = serverCommand.Flag("listen", "Address and port to listen on (HOST:PORT).").PlaceHolder("ADDR").Required().TCP()
-	serverForwardAddress = serverCommand.Flag("target", "Address to forward connections to (HOST:PORT, or unix:PATH).").PlaceHolder("ADDR").Required().String()
+	serverListenAddress  = serverCommand.Flag("listen", "Address and port to listen on (can be HOST:PORT, unix:PATH, systemd:NAME or launchd:NAME).").PlaceHolder("ADDR").Required().String()
+	serverForwardAddress = serverCommand.Flag("target", "Address to forward connections to (can be HOST:PORT or unix:PATH).").PlaceHolder("ADDR").Required().String()
 	serverProxyProtocol  = serverCommand.Flag("proxy-protocol", "Enable PROXY protocol v2 to signal connection info to backend").Bool()
 	serverUnsafeTarget   = serverCommand.Flag("unsafe-target", "If set, does not limit target to localhost, 127.0.0.1, [::1], or UNIX sockets.").Bool()
 	serverAllowAll       = serverCommand.Flag("allow-all", "Allow all clients, do not check client cert subject.").Bool()
@@ -78,9 +78,9 @@ var (
 	serverDisableAuth    = serverCommand.Flag("disable-authentication", "Disable client authentication, no client certificate will be required.").Default("false").Bool()
 
 	clientCommand       = app.Command("client", "Client mode (plain TCP/UNIX listener -> TLS target).")
-	clientListenAddress = clientCommand.Flag("listen", "Address and port to listen on (HOST:PORT, or unix:PATH).").PlaceHolder("ADDR").Required().String()
+	clientListenAddress = clientCommand.Flag("listen", "Address and port to listen on (can be HOST:PORT, unix:PATH, systemd:NAME or launchd:NAME).").PlaceHolder("ADDR").Required().String()
 	// Note: can't use .TCP() for clientForwardAddress because we need to set the original string in tls.Config.ServerName.
-	clientForwardAddress = clientCommand.Flag("target", "Address to forward connections to (HOST:PORT).").PlaceHolder("ADDR").Required().String()
+	clientForwardAddress = clientCommand.Flag("target", "Address to forward connections to (must be HOST:PORT).").PlaceHolder("ADDR").Required().String()
 	clientUnsafeListen   = clientCommand.Flag("unsafe-listen", "If set, does not limit listen to localhost, 127.0.0.1, [::1], or UNIX sockets.").Bool()
 	clientServerName     = clientCommand.Flag("override-server-name", "If set, overrides the server name used for hostname verification.").PlaceHolder("NAME").String()
 	clientConnectProxy   = clientCommand.Flag("connect-proxy", "If set, connect to target over given HTTP CONNECT proxy. Must be HTTP/HTTPS URL.").PlaceHolder("URL").URL()
@@ -150,7 +150,7 @@ type Context struct {
 	shutdownTimeout time.Duration
 	dial            func() (net.Conn, error)
 	metrics         *sqmetrics.SquareMetrics
-	cert            certloader.Certificate
+	tlsConfigSource certloader.TLSConfigSource
 }
 
 // Dialer is an interface for dialers (either net.Dialer, or http_dialer.HttpTunnel)
@@ -203,21 +203,32 @@ func validateFlags(app *kingpin.Application) error {
 	return nil
 }
 
-// Validates that addr is either a unix socket or localhost
-func validateUnixOrLocalhost(addr string) bool {
-	if strings.HasPrefix(addr, "unix:") {
-		return true
+// Validates that addr is "safe" and does not need --unsafe-listen (or --unsafe-target).
+func consideredSafe(addr string) bool {
+	safePrefixes := []string{
+		"unix:",
+		"systemd:",
+		"launchd:",
+		"127.0.0.1:",
+		"[::1]:",
+		"localhost:",
 	}
-	if strings.HasPrefix(addr, "127.0.0.1:") {
-		return true
-	}
-	if strings.HasPrefix(addr, "[::1]:") {
-		return true
-	}
-	if strings.HasPrefix(addr, "localhost:") {
-		return true
+	for _, prefix := range safePrefixes {
+		if strings.HasPrefix(addr, prefix) {
+			return true
+		}
 	}
 	return false
+}
+
+func validateCredentials(creds []bool) int {
+	count := 0
+	for _, cred := range creds {
+		if cred {
+			count++
+		}
+	}
+	return count
 }
 
 // Validate flags for server mode
@@ -229,20 +240,25 @@ func serverValidateFlags() error {
 		len(*serverAllowedIPs) > 0 ||
 		len(*serverAllowedURIs) > 0
 
-	if ((*keyPath != "" && *certPath == "") || (*keyPath == "" && *certPath != "")) && !hasPKCS11() {
-		return errors.New("when using --cert, must also specify --key")
-	}
-	if *certPath != "" && *keystorePath != "" {
-		return errors.New("--key/--cert and --keystore are mutually exclusive")
-	}
-	if *keystorePath == "" && !hasKeychainIdentity() && *certPath == "" {
+	hasValidCredentials := validateCredentials([]bool{
+		// Standard keystore
+		*keystorePath != "",
+		// macOS keychain identity
+		hasKeychainIdentity(),
+		// A certificate and a key, in separate files
+		(*certPath != "" && *keyPath != ""),
+		// A certificate, with the key in a PKCS#11 module
+		(*certPath != "" && hasPKCS11()),
+	})
+
+	if hasValidCredentials == 0 {
 		return errors.New("at least one of --keystore, --cert/--key or --keychain-identity (if supported) flags is required")
 	}
-	if *keystorePath != "" && hasKeychainIdentity() {
-		return errors.New("--keystore and --keychain-identity flags are mutually exclusive")
+	if hasValidCredentials > 1 {
+		return errors.New("--keystore, --cert/--key and --keychain-identity flags are mutually exclusive")
 	}
-	if *certPath != "" && hasKeychainIdentity() {
-		return errors.New("--cert/--key and --keychain-identity flags are mutually exclusive")
+	if (*keyPath != "" && *certPath == "") || (*certPath != "" && *keyPath == "" && !hasPKCS11()) {
+		return errors.New("--cert/--key must be set together, unless using PKCS11 for private key")
 	}
 	if !(*serverDisableAuth) && !(*serverAllowAll) && !hasAccessFlags {
 		return errors.New("at least one access control flag (--allow-{all,cn,ou,dns-san,ip-san,uri-san} or --disable-authentication) is required")
@@ -253,8 +269,8 @@ func serverValidateFlags() error {
 	if *serverDisableAuth && (*serverAllowAll || hasAccessFlags) {
 		return errors.New("--disable-authentication is mutually exclusive with other access control flags")
 	}
-	if !*serverUnsafeTarget && !validateUnixOrLocalhost(*serverForwardAddress) {
-		return errors.New("--target must be unix:PATH, localhost:PORT, 127.0.0.1:PORT or [::1]:PORT (unless --unsafe-target is set)")
+	if !*serverUnsafeTarget && !consideredSafe(*serverForwardAddress) {
+		return errors.New("--target must be unix:PATH or localhost:PORT (unless --unsafe-target is set)")
 	}
 
 	for _, suite := range strings.Split(*enabledCipherSuites, ",") {
@@ -268,16 +284,30 @@ func serverValidateFlags() error {
 
 // Validate flags for client mode
 func clientValidateFlags() error {
-	if *keystorePath == "" && !hasKeychainIdentity() && !*clientDisableAuth {
-		return errors.New("at least one of --keystore, --keychain-identity (if supported), or --disable-authentication flags is required")
+	hasValidCredentials := validateCredentials([]bool{
+		// Standard keystore
+		*keystorePath != "",
+		// macOS keychain identity
+		hasKeychainIdentity(),
+		// A certificate and a key, in separate files
+		(*certPath != "" && *keyPath != ""),
+		// A certificate, with the key in a PKCS#11 module
+		(*certPath != "" && hasPKCS11()),
+		// No credentials needed if auth is disabled
+		*clientDisableAuth,
+	})
+
+	if hasValidCredentials == 0 {
+		return errors.New("at least one of --keystore, --cert/--key, --keychain-identity (if supported) or --disable-authentication flags is required")
 	}
-	if (*keystorePath != "" && hasKeychainIdentity()) ||
-		(*keystorePath != "" && *clientDisableAuth) ||
-		(hasKeychainIdentity() && *clientDisableAuth) {
-		return errors.New("--keystore, --keychain-identity, and --disable-authentication flags are mutually exclusive")
+	if hasValidCredentials > 1 {
+		return errors.New("--keystore, --cert/--key, --keychain-identity and --disable-authentication flags are mutually exclusive")
 	}
-	if !*clientUnsafeListen && !validateUnixOrLocalhost(*clientListenAddress) {
-		return fmt.Errorf("--listen must be unix:PATH, localhost:PORT, 127.0.0.1:PORT or [::1]:PORT (unless --unsafe-listen is set)")
+	if (*keyPath != "" && *certPath == "") || (*certPath != "" && *keyPath == "" && !hasPKCS11()) {
+		return errors.New("--cert/--key must be set together, unless using PKCS11 for private key")
+	}
+	if !*clientUnsafeListen && !consideredSafe(*clientListenAddress) {
+		return fmt.Errorf("--listen must be unix:PATH, localhost:PORT, systemd:NAME or launchd:NAME (unless --unsafe-listen is set)")
 	}
 	if *clientConnectProxy != nil && (*clientConnectProxy).Scheme != "http" && (*clientConnectProxy).Scheme != "https" {
 		return fmt.Errorf("invalid CONNECT proxy %s, must have HTTP or HTTPS connection scheme", (*clientConnectProxy).String())
@@ -311,7 +341,7 @@ func run(args []string) error {
 	// Logger
 	err := initLogger(useSyslog(), *quiet)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error initializing logger: %s\n", err)
+		logger.Printf("error initializing logger: %s\n", err)
 		os.Exit(1)
 	}
 
@@ -332,9 +362,9 @@ func run(args []string) error {
 	go pClient.UpdatePrometheusMetrics()
 
 	// Read CA bundle for passing to metrics library
-	ca, err := caBundle(*caBundlePath)
+	ca, err := certloader.LoadTrustStore(*caBundlePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: unable to build TLS config: %s\n", err)
+		logger.Printf("error: unable to build TLS config: %s\n", err)
 		return err
 	}
 
@@ -348,64 +378,77 @@ func run(args []string) error {
 	}
 	metrics := sqmetrics.NewMetrics(*metricsURL, *metricsPrefix, client, *metricsInterval, metrics.DefaultRegistry, logger)
 
-	cert, err := buildCertificate(*keystorePath, *certPath, *keyPath, *keystorePass)
+	cert, err := buildCertificate(*keystorePath, *certPath, *keyPath, *keystorePass, *caBundlePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: unable to load certificates: %s\n", err)
+		logger.Printf("error: unable to load certificates: %s\n", err)
 		return err
 	}
+	tlsConfigSource := certloader.TLSConfigSourceFromCertificate(cert)
 
 	switch command {
 	case serverCommand.FullCommand():
 		if err := serverValidateFlags(); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %s\n", err)
+			logger.Printf("error: %s\n", err)
 			return err
 		}
 
 		dial, err := serverBackendDialer()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid target address: %s\n", err)
+			logger.Printf("error: invalid target address: %s\n", err)
 			return err
 		}
 		logger.Printf("using target address %s", *serverForwardAddress)
 
 		status := newStatusHandler(dial)
-		context := &Context{status, nil, *shutdownTimeout, dial, metrics, cert}
+		context := &Context{
+			status:          status,
+			shutdownTimeout: *shutdownTimeout,
+			dial:            dial,
+			metrics:         metrics,
+			tlsConfigSource: tlsConfigSource,
+		}
 		go context.reloadHandler(*timedReload)
 
 		// Start listening
 		err = serverListen(context)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error from server listen: %s\n", err)
+			logger.Printf("error from server listen: %s\n", err)
 		}
 		return err
 
 	case clientCommand.FullCommand():
 		if err := clientValidateFlags(); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %s\n", err)
+			logger.Printf("error: %s\n", err)
 			return err
 		}
 
-		network, address, host, err := parseUnixOrTCPAddress(*clientForwardAddress)
+		network, address, host, err := socket.ParseAddress(*clientForwardAddress)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid target address: %s\n", err)
+			logger.Printf("error: invalid target address: %s\n", err)
 			return err
 		}
 		logger.Printf("using target address %s", *clientForwardAddress)
 
-		dial, err := clientBackendDialer(cert, network, address, host)
+		dial, err := clientBackendDialer(tlsConfigSource, network, address, host)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: unable to build dialer: %s\n", err)
+			logger.Printf("error: unable to build dialer: %s\n", err)
 			return err
 		}
 
 		status := newStatusHandler(dial)
-		context := &Context{status, nil, *shutdownTimeout, dial, metrics, cert}
+		context := &Context{
+			status:          status,
+			shutdownTimeout: *shutdownTimeout,
+			dial:            dial,
+			metrics:         metrics,
+			tlsConfigSource: tlsConfigSource,
+		}
 		go context.reloadHandler(*timedReload)
 
 		// Start listening
 		err = clientListen(context)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error from client listen: %s\n", err)
+			logger.Printf("error from client listen: %s\n", err)
 		}
 		return err
 	}
@@ -419,7 +462,7 @@ func run(args []string) error {
 // connections. This is useful for the purpose of replacing certificates
 // in-place without having to take downtime, e.g. if a certificate is expiring.
 func serverListen(context *Context) error {
-	config, err := buildConfig(*enabledCipherSuites, *caBundlePath)
+	config, err := buildServerConfig(*enabledCipherSuites)
 	if err != nil {
 		logger.Printf("error trying to read CA bundle: %s", err)
 		return err
@@ -441,20 +484,22 @@ func serverListen(context *Context) error {
 		Logger:      logger,
 	}
 
-	config.GetCertificate = context.cert.GetCertificate
-	config.VerifyPeerCertificate = serverACL.VerifyPeerCertificateServer
 	if *serverDisableAuth {
 		config.ClientAuth = tls.NoClientCert
+	} else {
+		config.VerifyPeerCertificate = serverACL.VerifyPeerCertificateServer
 	}
 
-	listener, err := reuseport.NewReusablePortListener("tcp", (*serverListenAddress).String())
+	listener, err := socket.ParseAndOpen(*serverListenAddress)
 	if err != nil {
 		logger.Printf("error trying to listen: %s", err)
 		return err
 	}
 
+	serverConfig := mustGetServerConfig(context.tlsConfigSource, config)
+
 	p := proxy.New(
-		tls.NewListener(listener, config),
+		certloader.NewListener(listener, serverConfig),
 		*timeoutDuration,
 		context.dial,
 		logger,
@@ -470,7 +515,7 @@ func serverListen(context *Context) error {
 		}
 	}
 
-	logger.Printf("listening for connections on %s", (*serverListenAddress).String())
+	logger.Printf("listening for connections on %s", *serverListenAddress)
 
 	go p.Accept()
 
@@ -483,14 +528,7 @@ func serverListen(context *Context) error {
 
 // Open listening socket in client mode.
 func clientListen(context *Context) error {
-	// Setup listening socket
-	network, address, _, err := parseUnixOrTCPAddress(*clientListenAddress)
-	if err != nil {
-		logger.Printf("error parsing client listen address: %s", err)
-		return err
-	}
-
-	listener, err := net.Listen(network, address)
+	listener, err := socket.ParseAndOpen(*clientListenAddress)
 	if err != nil {
 		logger.Printf("error opening socket: %s", err)
 		return err
@@ -553,35 +591,26 @@ func (context *Context) serveStatus() error {
 		mux.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
 	}
 
-	config, err := buildConfig(*enabledCipherSuites, *caBundlePath)
-	if err != nil {
-		return err
-	}
-	config.ClientAuth = tls.NoClientCert
-	if context.cert != nil {
-		config.GetCertificate = context.cert.GetCertificate
-	}
-
-	network, address, _, err := parseUnixOrTCPAddress(*statusAddress)
+	network, address, _, err := socket.ParseAddress(*statusAddress)
 	if err != nil {
 		return err
 	}
 
-	var listener net.Listener
-	if network == "unix" {
-		listener, err = net.Listen(network, address)
-		listener.(*net.UnixListener).SetUnlinkOnClose(true)
-	} else {
-		listener, err = reuseport.NewReusablePortListener(network, address)
-	}
-
+	listener, err := socket.Open(network, address)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: unable to bind on status port: %s\n", err)
+		logger.Printf("error: unable to bind on status port: %s\n", err)
 		return err
 	}
 
-	if network != "unix" {
-		listener = tls.NewListener(listener, config)
+	if network != "unix" && context.tlsConfigSource.CanServe() {
+		config, err := buildServerConfig(*enabledCipherSuites)
+		if err != nil {
+			return err
+		}
+		config.ClientAuth = tls.NoClientCert
+
+		serverConfig := mustGetServerConfig(context.tlsConfigSource, config)
+		listener = certloader.NewListener(listener, serverConfig)
 	}
 
 	context.statusHTTP = &http.Server{
@@ -601,7 +630,7 @@ func (context *Context) serveStatus() error {
 
 // Get backend dialer function in server mode (connecting to a unix socket or tcp port)
 func serverBackendDialer() (func() (net.Conn, error), error) {
-	backendNet, backendAddr, _, err := parseUnixOrTCPAddress(*serverForwardAddress)
+	backendNet, backendAddr, _, err := socket.ParseAddress(*serverForwardAddress)
 	if err != nil {
 		return nil, err
 	}
@@ -612,8 +641,8 @@ func serverBackendDialer() (func() (net.Conn, error), error) {
 }
 
 // Get backend dialer function in client mode (connecting to a TLS port)
-func clientBackendDialer(cert certloader.Certificate, network, address, host string) (func() (net.Conn, error), error) {
-	config, err := buildConfig(*enabledCipherSuites, *caBundlePath)
+func clientBackendDialer(tlsConfigSource certloader.TLSConfigSource, network, address, host string) (func() (net.Conn, error), error) {
+	config, err := buildClientConfig(*enabledCipherSuites)
 	if err != nil {
 		return nil, err
 	}
@@ -647,11 +676,19 @@ func clientBackendDialer(cert certloader.Certificate, network, address, host str
 		logger.Printf("using HTTP(S) CONNECT proxy %s", (*clientConnectProxy).String())
 
 		// Use HTTP CONNECT proxy to connect to target.
-		proxyConfig, err := buildConfig(*enabledCipherSuites, *caBundlePath)
+		proxyConfig, err := buildClientConfig(*enabledCipherSuites)
 		if err != nil {
 			return nil, err
 		}
 		config.ClientAuth = tls.NoClientCert
+
+		// Read CA bundle for passing to proxy library
+		ca, err := certloader.LoadTrustStore(*caBundlePath)
+		if err != nil {
+			logger.Printf("error: unable to build TLS config: %s\n", err)
+			return nil, err
+		}
+		config.RootCAs = ca
 
 		dialer = http_dialer.New(
 			*clientConnectProxy,
@@ -659,33 +696,9 @@ func clientBackendDialer(cert certloader.Certificate, network, address, host str
 			http_dialer.WithTls(proxyConfig))
 	}
 
-	d := certloader.DialerWithCertificate(cert, config, *timeoutDuration, dialer)
+	clientConfig := tlsConfigSource.GetClientConfig(config)
+	d := certloader.DialerWithCertificate(clientConfig, *timeoutDuration, dialer)
 	return func() (net.Conn, error) { return d.Dial(network, address) }, nil
-}
-
-// Parse a string representing a TCP address or UNIX socket for our backend
-// target. The input can be or the form "HOST:PORT" for TCP or "unix:PATH"
-// for a UNIX socket.
-func parseUnixOrTCPAddress(input string) (network, address, host string, err error) {
-	if strings.HasPrefix(input, "unix:") {
-		network = "unix"
-		address = input[5:]
-		return
-	}
-
-	host, _, err = net.SplitHostPort(input)
-	if err != nil {
-		return
-	}
-
-	// Make sure target address resolves
-	_, err = net.ResolveTCPAddr("tcp", input)
-	if err != nil {
-		return
-	}
-
-	network, address = "tcp", input
-	return
 }
 
 func proxyLoggerFlags(flags []string) int {
@@ -707,4 +720,12 @@ func proxyLoggerFlags(flags []string) int {
 		}
 	}
 	return out
+}
+
+func mustGetServerConfig(source certloader.TLSConfigSource, config *tls.Config) certloader.TLSServerConfig {
+	serverConfig, ok := source.GetServerConfig(config)
+	if !ok {
+		panic("TLS config not appropriate for server role")
+	}
+	return serverConfig
 }
