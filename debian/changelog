@@ -1,3 +1,9 @@
+ghostunnel (1.4.1+nmu3) UNRELEASED; urgency=medium
+
+  * Add support for all platforms.
+
+ -- root <root@5e64f59dc342>  Mon, 20 Aug 2019 08:40:30 +0000
+
 ghostunnel (1.4.1+nmu2) UNRELEASED; urgency=medium
 
   * Upgrades upstream to 1.4.1 release.

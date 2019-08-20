@@ -19,10 +19,6 @@ jobs:
                 binutils-multiarch libltdl-dev:i386 \
                 ruby2.3-dev rubygems
       - run:
-          name: Install PackageCloud
-          command: |
-              sudo gem install rake package_cloud
-      - run:
           name: Build amd64
           command: |
               debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=amd64 -aamd64 -i -us -uc -b
@@ -44,10 +40,10 @@ jobs:
       - deploy:
           command: |
               if [ "${CIRCLE_BRANCH}" == "master" ]; then
-                package_cloud push wott/agent/debian/stretch /tmp/deb/*.deb
-                package_cloud push wott/agent/debian/buster /tmp/deb/*.deb
-                package_cloud push wott/agent/raspbian/stretch /tmp/deb/ghostunnel*_armhf.deb
-                package_cloud push wott/agent/raspbian/buster /tmp/deb/ghostunnel*_armhf.deb
+                sudo gem install rake package_cloud
+                for distro in debian/stretch raspbian/stretch debian/buster raspbian/buster ubuntu/xenial debian/jessie raspbian/jessie ubuntu/trusty; do
+                  package_cloud push wott/agent/$distro /tmp/deb/*.deb
+                done
               fi
       - store_artifacts:
           path: /tmp/deb
