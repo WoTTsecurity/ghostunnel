@@ -34,7 +34,7 @@ jobs:
           command: |
               debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=arm --set-envvar GOARM=6 -aarmel -i -us -uc -b
               debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=arm --set-envvar GOARM=6 -aarmhf -i -us -uc -b
-              debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=arm --set-envvar GOARM=7 -aarm64 -i -us -uc -b
+              debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=arm64 --set-envvar GOARM=7 -aarm64 -i -us -uc -b
       - run:
           name: Copy artifacts
           command: |
