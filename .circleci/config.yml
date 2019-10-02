@@ -11,11 +11,13 @@ jobs:
           command: |
                sudo dpkg --add-architecture armel
                sudo dpkg --add-architecture armhf
+               sudo dpkg --add-architecture arm64
                sudo dpkg --add-architecture i386
                sudo apt-get update
                sudo apt-get install libltdl-dev devscripts \
                 crossbuild-essential-armel libltdl-dev:armel \
                 crossbuild-essential-armhf libltdl-dev:armhf \
+                crossbuild-essential-arm64 libltdl-dev:arm64 \
                 binutils-multiarch libltdl-dev:i386 \
                 ruby2.3-dev rubygems
       - run:
@@ -32,6 +34,7 @@ jobs:
           command: |
               debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=arm --set-envvar GOARM=6 -aarmel -i -us -uc -b
               debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=arm --set-envvar GOARM=6 -aarmhf -i -us -uc -b
+              debuild  --prepend-path=/usr/local/go/bin --set-envvar GOARCH=arm --set-envvar GOARM=7 -aarm64 -i -us -uc -b
       - run:
           name: Copy artifacts
           command: |
