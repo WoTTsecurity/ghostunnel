@@ -44,7 +44,7 @@ jobs:
           command: |
               if [ "${CIRCLE_BRANCH}" == "master" ]; then
                 sudo gem install rake package_cloud
-                for distro in debian/stretch raspbian/stretch debian/buster raspbian/buster ubuntu/xenial debian/jessie raspbian/jessie ubuntu/trusty; do
+                for distro in debian/stretch raspbian/stretch ubuntu/bionic debian/buster raspbian/buster ubuntu/xenial debian/jessie raspbian/jessie ubuntu/trusty; do
                   package_cloud push wott/agent/$distro /tmp/deb/*.deb
                 done
               fi
