@@ -1,3 +1,9 @@
+ghostunnel (1.4.1+nmu5) UNRELEASED; urgency=medium
+
+  * Push to ubuntu/bionic.
+
+ -- root <root@5e64f59dc342>  Fri, 04 Oct 2019 16:22:39 +0600
+
 ghostunnel (1.4.1+nmu4) UNRELEASED; urgency=medium
 
   * Add support for arm64.
